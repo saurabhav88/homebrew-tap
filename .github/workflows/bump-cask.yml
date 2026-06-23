@@ -1,0 +1,111 @@
+name: Bump EnviousWispr cask
+
+# Updates Casks/enviouswispr.rb to the latest published EnviousWispr release
+# (version + sha256), then commits the change to this repo.
+#
+# Why this lives HERE (the tap), not in the EnviousWispr release pipeline:
+# the release pipeline runs in the EnviousWispr repo, and its built-in token
+# cannot write to THIS separate repo. Running the bump here lets it use this
+# repo's own built-in token (no cross-repo personal token to mint or guard).
+#
+# How it runs: triggered as the final step of cutting a release (via
+# `gh workflow run bump-cask.yml -R saurabhav88/homebrew-tap`, or the
+# "Run workflow" button). It reads the latest release from the public
+# EnviousWispr repo (no auth needed) and is a safe no-op when already current.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-cask
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      UPSTREAM: saurabhav88/EnviousWispr
+      CASK: Casks/enviouswispr.rb
+    steps:
+      - name: Checkout tap
+        uses: actions/checkout@v4
+
+      - name: Resolve latest release version
+        id: rel
+        run: |
+          set -euo pipefail
+          TAG="$(gh api "repos/${UPSTREAM}/releases/latest" --jq '.tag_name')"
+          VERSION="${TAG#v}"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::could not parse a semver version from tag '$TAG'"; exit 1
+          fi
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Latest EnviousWispr release: $TAG (version $VERSION)"
+
+      - name: Skip if cask already current
+        id: cur
+        run: |
+          set -euo pipefail
+          CURRENT="$(python3 -c "import re,sys; print((re.search(r'^\s*version \"([^\"]+)\"', open('$CASK').read(), re.M) or [None,''])[1])")"
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          if [[ "$CURRENT" == "${{ steps.rel.outputs.version }}" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Cask already at $CURRENT — nothing to do."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "Cask at $CURRENT, release is ${{ steps.rel.outputs.version }} — will bump."
+          fi
+
+      - name: Download DMG and compute sha256
+        if: steps.cur.outputs.changed == 'true'
+        id: sha
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.rel.outputs.tag }}"
+          VERSION="${{ steps.rel.outputs.version }}"
+          URL="https://github.com/${UPSTREAM}/releases/download/${TAG}/EnviousWispr-${VERSION}.dmg"
+          echo "Downloading $URL"
+          curl -fsSL --retry 3 -o /tmp/EnviousWispr.dmg "$URL"
+          SHA="$(sha256sum /tmp/EnviousWispr.dmg | awk '{print $1}')"
+          if [[ ! "$SHA" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::computed sha256 looks wrong: '$SHA'"; exit 1
+          fi
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "sha256: $SHA"
+
+      - name: Rewrite version + sha256 in cask
+        if: steps.cur.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          python3 - "$CASK" "${{ steps.rel.outputs.version }}" "${{ steps.sha.outputs.sha256 }}" <<'PY'
+          import re, sys
+          path, version, sha = sys.argv[1], sys.argv[2], sys.argv[3]
+          src = open(path).read()
+          src, nv = re.subn(r'^(\s*version )"[^"]*"', r'\g<1>"%s"' % version, src, count=1, flags=re.M)
+          src, ns = re.subn(r'^(\s*sha256 )"[0-9a-f]{64}"', r'\g<1>"%s"' % sha, src, count=1, flags=re.M)
+          if nv != 1 or ns != 1:
+              sys.exit("edit failed: version subs=%d sha256 subs=%d (expected 1 each)" % (nv, ns))
+          open(path, 'w').write(src)
+          print("rewrote version + sha256")
+          PY
+          grep -q "version \"${{ steps.rel.outputs.version }}\"" "$CASK"
+          grep -q "sha256 \"${{ steps.sha.outputs.sha256 }}\"" "$CASK"
+
+      - name: Commit and push
+        if: steps.cur.outputs.changed == 'true'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$CASK"
+          if git diff --cached --quiet; then
+            echo "No changes staged — nothing to commit."; exit 0
+          fi
+          git commit -m "chore: bump enviouswispr to ${{ steps.rel.outputs.version }}"
+          git push
+          echo "Pushed bump to ${{ steps.rel.outputs.version }}."
