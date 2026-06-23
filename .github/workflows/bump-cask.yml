@@ -39,7 +39,7 @@ jobs:
         id: rel
         run: |
           set -euo pipefail
-          # tag_name comes straight from the GitHub API (not from any ${{ }} expr).
+          # tag_name comes straight from the GitHub API (not from a workflow expression).
           TAG="$(gh api "repos/${UPSTREAM}/releases/latest" --jq '.tag_name')"
           # Whole tag must be exactly vX.Y.Z — anchored at both ends so untrusted
           # release metadata can never carry extra shell-meaningful characters.
