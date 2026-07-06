@@ -15,7 +15,18 @@ name: Bump EnviousWispr cask
 # version already matches, and is a clean no-op (no commit) when already correct.
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Exact version to bump to, e.g. 2.3.1 (no leading v). Optional — omit to resolve the latest published release.'
+        required: false
+        type: string
+  # #1368: weekly self-healing backstop. The instant on-release dispatch from
+  # EnviousWispr's release.yml (which passes an explicit `version`) is PRIMARY;
+  # this cron only catches a silently-failed dispatch. Safe to run always: the
+  # reconcile is idempotent and a clean no-op when the cask already matches.
+  schedule:
+    - cron: '17 9 * * 1'   # Mondays 09:17 UTC
 
 permissions:
   contents: write
@@ -35,20 +46,39 @@ jobs:
       - name: Checkout tap
         uses: actions/checkout@v5
 
-      - name: Resolve latest release
+      - name: Resolve target release
         id: rel
+        env:
+          # #1368: explicit version from the release-pipeline dispatch (empty on a
+          # manual no-arg run or the weekly cron). Read via env, never interpolated
+          # into the script body.
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          # tag_name comes straight from the GitHub API (not from a workflow expression).
-          TAG="$(gh api "repos/${UPSTREAM}/releases/latest" --jq '.tag_name')"
-          # Whole tag must be exactly vX.Y.Z — anchored at both ends so untrusted
-          # release metadata can never carry extra shell-meaningful characters.
-          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::unexpected release tag '$TAG' (want vX.Y.Z)"; exit 1
+          if [[ -n "${INPUT_VERSION:-}" ]]; then
+            # #1368: trust the caller's explicit version, NOT releases/latest (which
+            # can be cache-stale seconds after publish and silently bump the wrong
+            # version). Validate as anchored X.Y.Z BEFORE any use — untrusted input.
+            if [[ ! "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::invalid version input '$INPUT_VERSION' (want X.Y.Z, no leading v)"; exit 1
+            fi
+            VERSION="$INPUT_VERSION"
+            TAG="v${VERSION}"
+            echo "Using explicit version input: $TAG"
+          else
+            # No input (manual no-arg run or weekly cron) — resolve the latest release.
+            # tag_name comes straight from the GitHub API (not from a workflow expression).
+            TAG="$(gh api "repos/${UPSTREAM}/releases/latest" --jq '.tag_name')"
+            # Whole tag must be exactly vX.Y.Z — anchored at both ends so untrusted
+            # release metadata can never carry extra shell-meaningful characters.
+            if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::unexpected release tag '$TAG' (want vX.Y.Z)"; exit 1
+            fi
+            VERSION="${TAG#v}"
+            echo "Resolved latest EnviousWispr release: $TAG"
           fi
-          echo "tag=$TAG"            >> "$GITHUB_OUTPUT"
-          echo "version=${TAG#v}"    >> "$GITHUB_OUTPUT"
-          echo "Latest EnviousWispr release: $TAG"
+          echo "tag=$TAG"          >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"  >> "$GITHUB_OUTPUT"
 
       - name: Download DMG and compute sha256
         id: dmg
