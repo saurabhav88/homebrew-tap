@@ -1,6 +1,6 @@
 cask "enviouswispr" do
-  version "2.5.4"
-  sha256 "0cc55526e6a4a4a1c822c2b82e12df5d05d91db9b909e40eb2c228c8134e1fe3"
+  version "2.5.5"
+  sha256 "8210c9948db7a9350b09f53611c2de2a27a6a2ca93a85a9380de549ae0e0a08e"
 
   url "https://github.com/saurabhav88/EnviousWispr/releases/download/v#{version}/EnviousWispr-#{version}.dmg"
   name "EnviousWispr"
